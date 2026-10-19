@@ -16,7 +16,7 @@ from analytics.lag_analysis import lag_correlation
 from analytics.preprocessing import aggregate_feature_timeseries
 from analytics.statistics import correlation_matrix
 from config.constants import DEFAULT_AOI_BOUNDS, GEE_PROJECT_ID
-from gee.auth import initialize_earth_engine
+from gee.auth import get_configured_project_id, initialize_earth_engine
 from gee.datasets import load_sentinel2
 from ui.charts import (
     correlation_heatmap,
@@ -173,11 +173,11 @@ def render_step_1_configure(parse_aoi_bounds, fetch_real_data):
         )
         s1_orbit_pass = "DESCENDING" if "Descending" in s1_pass_label else ("ASCENDING" if "Ascending" in s1_pass_label else "BOTH")
 
-        ee_project_id = (os.getenv("EE_PROJECT_ID", "") or GEE_PROJECT_ID).strip()
+        ee_project_id = get_configured_project_id()
         if not ee_project_id:
             st.info(
-                "ℹ️ **Earth Engine Configuration**: The `EE_PROJECT_ID` environment variable is not set. "
-                "Set `EE_PROJECT_ID` in your system environment to query Google Earth Engine datasets."
+                "ℹ️ **Earth Engine Configuration**: Project ID is not configured. "
+                "Set `EE_PROJECT_ID` in your system environment or in Streamlit Secrets (`.streamlit/secrets.toml`)."
             )
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
@@ -204,10 +204,10 @@ def render_step_1_configure(parse_aoi_bounds, fetch_real_data):
         st.session_state.pop("dataset_warnings", None)
         st.session_state["show_s2_preview"] = False
         try:
-            ee_project_id = (os.getenv("EE_PROJECT_ID", "") or GEE_PROJECT_ID).strip()
+            ee_project_id = get_configured_project_id()
             if not ee_project_id:
-                st.error("Google Earth Engine project is not configured. Please set the `EE_PROJECT_ID` environment variable.")
-                st.info("Tip: Set `EE_PROJECT_ID` in your environment (e.g. `$env:EE_PROJECT_ID='your-project-id'`).")
+                st.error("Google Earth Engine project is not configured. Please set `EE_PROJECT_ID` in your environment or in Streamlit Secrets.")
+                st.info("Tip: Set `EE_PROJECT_ID` in your environment (e.g. `$env:EE_PROJECT_ID='your-project-id'`) or Streamlit Cloud Secrets.")
                 st.stop()
 
             bounds = parse_aoi_bounds(bounds_input)

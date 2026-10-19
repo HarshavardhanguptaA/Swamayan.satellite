@@ -177,24 +177,48 @@ python -m pytest tests/ -v
 
 ---
 
-## Production Deployment Guidelines
+## Deployment Guidelines
 
-For containerized or cloud environments (e.g., Google Cloud Run, GKE, AWS ECS):
+### 1. Streamlit Community Cloud Deployment
+
+SWAYAMYAN is configured for one-click deployment on **Streamlit Community Cloud**:
+
+1. **Repository Settings:** Connect your GitHub repository (`main` branch) with `app.py` as the entry point.
+2. **Configure App Secrets:** In the Streamlit Cloud dashboard, navigate to **App Settings -> Secrets** and paste your configuration following the template in [`.streamlit/secrets.example.toml`](file:///.streamlit/secrets.example.toml):
+
+```toml
+# Google Cloud Project registered for Earth Engine
+EE_PROJECT_ID = "your-earth-engine-cloud-project-id"
+
+# Dedicated Service Account Credentials
+[EARTH_ENGINE_SERVICE_ACCOUNT]
+type = "service_account"
+project_id = "your-earth-engine-cloud-project-id"
+private_key_id = "your-private-key-id"
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "swayamyan-ee-sa@your-project-id.iam.gserviceaccount.com"
+client_id = "123456789012345678901"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/swayamyan-ee-sa%40your-project-id.iam.gserviceaccount.com"
+```
+
+> **Security Note:** Real service account keys and secrets must only be entered into Streamlit Cloud Secrets or local `.streamlit/secrets.toml`. Never commit real private keys to GitHub. `.streamlit/secrets.toml` is strictly ignored by `.gitignore`.
+
+### 2. Containerized & Self-Hosted Cloud Deployment
+
+For containerized environments (Google Cloud Run, GKE, AWS ECS, Docker):
 
 1. **Service Account Credentials:**
-   Headless production environments cannot run interactive OAuth web flows (`earthengine authenticate`). Instead, provision a Google Cloud Service Account with the Earth Engine Resource Viewer / User role (`roles/earthengine.reader` or `roles/earthengine.writer`).
-   Mount the service account key or use Workload Identity:
+   Provision a Google Cloud Service Account with the `Earth Engine Resource Viewer` (`roles/earthengine.reader`) or `Earth Engine Resource User` role. Mount the key or use Workload Identity:
    ```bash
    export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
    export EE_PROJECT_ID="your-cloud-project-id"
    ```
 
-2. **Security & Secrets:**
-   * Never commit service account JSON keys, `.env` files, or `.streamlit/secrets.toml` into Git.
-   * Ensure `.gitignore` remains intact when building images.
-
-3. **Port & Server Configuration:**
-   Configure Streamlit via `.streamlit/config.toml` or CLI flags:
+2. **Port & Server Configuration:**
+   Launch the containerized application using headless settings:
    ```bash
    streamlit run app.py --server.port 8080 --server.address 0.0.0.0
    ```

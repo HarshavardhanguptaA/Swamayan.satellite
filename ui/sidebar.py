@@ -5,7 +5,8 @@ import os
 
 import streamlit as st
 
-from config.constants import DEFAULT_AOI_BOUNDS, GEE_PROJECT_ID
+from config.constants import DEFAULT_AOI_BOUNDS
+from gee.auth import get_configured_project_id
 
 DATASETS = ["Sentinel-2", "Sentinel-1", "MODIS LST", "Landsat 8/9", "GPM IMERG"]
 
@@ -15,11 +16,11 @@ def render_query_form():
     default_end = today - timedelta(days=10)
     default_start = default_end - timedelta(days=365)
     bounds_text = ", ".join(str(value) for value in DEFAULT_AOI_BOUNDS)
-    ee_project_id = (os.getenv("EE_PROJECT_ID", "") or GEE_PROJECT_ID).strip()
+    ee_project_id = get_configured_project_id()
 
     st.sidebar.header("Live data query")
     if not ee_project_id:
-        st.sidebar.info("EE_PROJECT_ID environment variable is not configured.")
+        st.sidebar.info("EE_PROJECT_ID is not configured in environment or Streamlit Secrets.")
 
     with st.sidebar.form("earth_engine_query"):
         bounds_input = st.text_input("AOI bounds (min_lon, min_lat, max_lon, max_lat)", value=bounds_text)

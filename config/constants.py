@@ -6,7 +6,20 @@ pure-Python tests can load configuration without authenticating.
 
 import os
 
-GEE_PROJECT_ID = os.getenv("EE_PROJECT_ID", "").strip()
+
+def _resolve_default_project_id() -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "EE_PROJECT_ID" in st.secrets:
+            val = st.secrets["EE_PROJECT_ID"]
+            if val and str(val).strip():
+                return str(val).strip()
+    except Exception:
+        pass
+    return os.getenv("EE_PROJECT_ID", "").strip()
+
+
+GEE_PROJECT_ID = _resolve_default_project_id()
 
 # Coordinates are ordered as min longitude, min latitude, max longitude,
 # max latitude. This is a modest sample AOI; users can change it in the UI.
