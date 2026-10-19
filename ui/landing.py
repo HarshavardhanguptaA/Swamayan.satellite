@@ -346,7 +346,7 @@ def render_landing_page():
     st.markdown("<div style='height:80px;'></div>", unsafe_allow_html=True)
 
     # ── 8. CTA BANNER ────────────────────────────────────────────────────────
-    with st.container():
+    with st.container(key="cta"):
         st.markdown("""
         <div style="max-width:620px;position:relative;z-index:2;">
           <span style="font-family:'Inter',sans-serif;font-size:0.8rem;font-weight:700;
