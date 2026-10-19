@@ -14,6 +14,11 @@ from analytics.fusion import build_feature_level_fusion
 from analytics.fusion_readiness import detect_peak_lag, fusion_decision, stability_score
 from analytics.lag_analysis import lag_correlation
 from analytics.preprocessing import aggregate_feature_timeseries
+from analytics.snapshot import (
+    is_live_gee_configured,
+    list_available_snapshots,
+    load_snapshot,
+)
 from analytics.statistics import correlation_matrix
 from config.constants import DEFAULT_AOI_BOUNDS, GEE_PROJECT_ID
 from gee.auth import get_configured_project_id, initialize_earth_engine
@@ -104,10 +109,30 @@ def render_step_1_configure(parse_aoi_bounds, fetch_real_data):
     <h2 style="font-size: 2.2rem; font-weight: 600; color: {_TEXT_MAIN}; margin-bottom: 8px;">
       Configure study parameters
     </h2>
-    <p style="color: {_TEXT_MUTED}; font-size: 1.02rem; margin-bottom: 28px;">
-      Define your Area of Interest (AOI), date window, and satellite sensor families to query live Google Earth Engine datasets.
+    <p style="color: {_TEXT_MUTED}; font-size: 1.02rem; margin-bottom: 24px;">
+      Select a verified satellite observation snapshot or query live Google Earth Engine datasets.
     </p>
     """, unsafe_allow_html=True)
+
+    live_available = is_live_gee_configured()
+    available_snapshots = list_available_snapshots()
+
+    # Ingestion Mode Selection
+    mode_options = [
+        "Hosted Observation Snapshot (Public Demonstration)",
+        "Live Earth Engine Query (Local / Authenticated)",
+    ]
+    default_mode_idx = 0 if not live_available or available_snapshots else 1
+
+    mode_label = st.radio(
+        "Study Ingestion Mode",
+        mode_options,
+        index=st.session_state.get("workspace_mode_idx", default_mode_idx),
+        horizontal=True,
+        help="Hosted mode uses genuine Earth Engine observation datasets for free keyless deployment. Live mode connects directly to Earth Engine.",
+        key="step1_mode_radio",
+    )
+    is_snapshot_mode = "Hosted" in mode_label
 
     today = date.today()
     default_end = today - timedelta(days=10)
@@ -115,49 +140,58 @@ def render_step_1_configure(parse_aoi_bounds, fetch_real_data):
 
     col_form, col_map = st.columns([1.1, 1], gap="large")
 
-    with col_form:
-        # Preset selection
-        selected_preset = st.selectbox(
-            "Study area preset",
-            list(PRESETS.keys()),
-            index=0,
-            key="preset_selection"
-        )
-        preset_coords = PRESETS[selected_preset]
-        if preset_coords is not None:
-            initial_bounds_str = f"{preset_coords[0]}, {preset_coords[1]}, {preset_coords[2]}, {preset_coords[3]}"
-        else:
-            initial_bounds_str = ", ".join(str(val) for val in DEFAULT_AOI_BOUNDS)
+    if is_snapshot_mode and available_snapshots:
+        # Hosted Snapshot Mode
+        with col_form:
+            st.markdown(f"""
+            <div style="background: {_BG_ALT}; border-left: 3px solid {_TEAL}; padding: 12px 18px; margin-bottom: 20px; font-size: 0.93rem; color: {_TEAL_DARK};">
+              <strong>Public Hosted Mode Active:</strong> Ingesting genuine satellite observations extracted directly from Google Earth Engine.
+              No Google Cloud billing or hosted private keys required. Real missing observations (e.g. monsoon cloud cover) are preserved as NaN without synthetic values.
+            </div>
+            """, unsafe_allow_html=True)
 
-        bounds_input = st.text_input(
-            "AOI bounds (min_lon, min_lat, max_lon, max_lat)",
-            value=initial_bounds_str,
-            help="Four comma-separated WGS84 coordinates defining the bounding box."
-        )
-
-        date_range = st.date_input(
-            "Observation date range",
-            value=(default_start, default_end),
-            min_value=date(2000, 1, 1),
-            max_value=today,
-            help="Select start and end dates. 1 to 3 years recommended for optimal response."
-        )
-
-        datasets_selected = st.multiselect(
-            "Satellite sensor collections",
-            DATASETS,
-            default=["Sentinel-2", "Sentinel-1", "MODIS LST"],
-            help="Choose multi-satellite data sources to ingest."
-        )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            cloud_thresh = st.slider(
-                "Max Sentinel-2 scene cloud (%)",
-                0, 100, 35, 5,
-                help="Filters optical imagery by scene cloud coverage."
+            snapshot_map = {
+                s["id"]: f"{s['name']} ({s['start_date']} to {s['end_date_exclusive']}) · {len(s.get('datasets', []))} sensors"
+                for s in available_snapshots
+            }
+            selected_snapshot_id = st.selectbox(
+                "Verified observation dataset",
+                list(snapshot_map.keys()),
+                format_func=lambda k: snapshot_map[k],
+                key="selected_snapshot_choice",
+                help="Select one of the pre-extracted genuine satellite observation datasets."
             )
-        with c2:
+            chosen_snapshot = next(s for s in available_snapshots if s["id"] == selected_snapshot_id)
+
+            # Metadata details badge
+            st.caption(
+                f"Snapshot: **{chosen_snapshot['name']}** | Bounds: `{chosen_snapshot['bounds']}` | "
+                f"Extracted: `{chosen_snapshot.get('extraction_timestamp_utc', '')[:10]}`"
+            )
+
+            # Display parameters as verified values
+            bounds_str = f"{chosen_snapshot['bounds'][0]}, {chosen_snapshot['bounds'][1]}, {chosen_snapshot['bounds'][2]}, {chosen_snapshot['bounds'][3]}"
+            st.text_input(
+                "AOI bounds (min_lon, min_lat, max_lon, max_lat)",
+                value=bounds_str,
+                disabled=True,
+                help="Fixed to the verified observation snapshot. Switch to Live Query mode to query custom coordinates."
+            )
+
+            c_date1, c_date2 = st.columns(2)
+            with c_date1:
+                st.text_input("Start date", value=chosen_snapshot["start_date"], disabled=True)
+            with c_date2:
+                st.text_input("End date (exclusive)", value=chosen_snapshot["end_date_exclusive"], disabled=True)
+
+            st.multiselect(
+                "Satellite sensor collections",
+                DATASETS,
+                default=chosen_snapshot.get("datasets", ["Sentinel-2", "Sentinel-1", "MODIS LST"]),
+                disabled=True,
+                help="Sensors included in the verified snapshot."
+            )
+
             temporal_agg = st.selectbox(
                 "Temporal aggregation",
                 ["Monthly", "Native cadence"],
@@ -165,96 +199,204 @@ def render_step_1_configure(parse_aoi_bounds, fetch_real_data):
                 help="Monthly regularizes satellite passes and averages continuous features while summing precipitation."
             )
 
-        s1_pass_label = st.selectbox(
-            "Sentinel-1 orbit pass",
-            ["Descending (morning, recommended)", "Ascending (evening)", "Both (mixed geometry)"],
-            index=0,
-            help="Descending pass provides consistent morning acquisitions. Ascending is evening. Both mixes observation geometries with automatic fallback if scenes are absent."
-        )
-        s1_orbit_pass = "DESCENDING" if "Descending" in s1_pass_label else ("ASCENDING" if "Ascending" in s1_pass_label else "BOTH")
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            load_snapshot_clicked = st.button("Load satellite observation snapshot →", type="primary", use_container_width=True)
 
-        ee_project_id = get_configured_project_id()
-        if not ee_project_id:
-            st.info(
-                "ℹ️ **Earth Engine Configuration**: Project ID is not configured. "
-                "Set `EE_PROJECT_ID` in your system environment or in Streamlit Secrets (`.streamlit/secrets.toml`)."
-            )
+        with col_map:
+            st.markdown(f"""
+            <div style="font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: {_TEXT_SUBTLE}; margin-bottom: 8px;">
+              Snapshot Geographic Area
+            </div>
+            """, unsafe_allow_html=True)
+            try:
+                snap_bounds = tuple(chosen_snapshot["bounds"])
+                render_aoi_preview(snap_bounds, height=390)
+                st.caption(f"Coordinates: Lon [{snap_bounds[0]}°, {snap_bounds[2]}°] · Lat [{snap_bounds[1]}°, {snap_bounds[3]}°]")
+            except Exception:
+                st.info("Map preview unavailable.")
 
-        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-        fetch_clicked = st.button("Fetch real observations →", type="primary", use_container_width=True)
+        if load_snapshot_clicked:
+            st.session_state.pop("analysis_df", None)
+            st.session_state.pop("raw_df", None)
+            st.session_state.pop("analysis_config", None)
+            st.session_state.pop("dataset_counts", None)
+            st.session_state.pop("dataset_warnings", None)
+            st.session_state["show_s2_preview"] = False
 
-    with col_map:
-        st.markdown(f"""
-        <div style="font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: {_TEXT_SUBTLE}; margin-bottom: 8px;">
-          AOI Geographic Preview
-        </div>
-        """, unsafe_allow_html=True)
-        try:
-            current_bounds = parse_aoi_bounds(bounds_input)
-            render_aoi_preview(current_bounds, height=390)
-            st.caption(f"Coordinates: Lon [{current_bounds[0]}°, {current_bounds[2]}°] · Lat [{current_bounds[1]}°, {current_bounds[3]}°]")
-        except Exception:
-            st.info("Enter valid bounding box coordinates to preview the map.")
-
-    if fetch_clicked:
-        st.session_state.pop("analysis_df", None)
-        st.session_state.pop("raw_df", None)
-        st.session_state.pop("analysis_config", None)
-        st.session_state.pop("dataset_counts", None)
-        st.session_state.pop("dataset_warnings", None)
-        st.session_state["show_s2_preview"] = False
-        try:
-            ee_project_id = get_configured_project_id()
-            if not ee_project_id:
-                st.error("Google Earth Engine project is not configured. Please set `EE_PROJECT_ID` in your environment or in Streamlit Secrets.")
-                st.info("Tip: Set `EE_PROJECT_ID` in your environment (e.g. `$env:EE_PROJECT_ID='your-project-id'`) or Streamlit Cloud Secrets.")
-                st.stop()
-
-            bounds = parse_aoi_bounds(bounds_input)
-            if not datasets_selected:
-                raise ValueError("Select at least one satellite dataset.")
-            if not isinstance(date_range, (tuple, list)) or len(date_range) != 2:
-                raise ValueError("Select both start and end dates.")
-            start, end = date_range
-            if start > end:
-                raise ValueError("Start date must be before end date.")
-            if (end - start).days > 1100:
-                raise ValueError("Limit each query to about three years to keep Earth Engine requests responsive.")
-
-            start_text = start.isoformat()
-            end_exclusive = (end + timedelta(days=1)).isoformat()
-
-            with st.spinner("Extracting multi-satellite observations from Google Earth Engine..."):
-                raw_df, counts, warnings = fetch_real_data(
-                    ee_project_id, bounds, start_text, end_exclusive,
-                    tuple(datasets_selected), int(cloud_thresh),
-                    s1_orbit_pass=s1_orbit_pass
-                )
+            with st.spinner("Loading genuine satellite observations from snapshot..."):
+                raw_df, meta = load_snapshot(selected_snapshot_id)
                 result_df = aggregate_feature_timeseries(raw_df, temporal_agg)
-                if result_df.empty:
-                    raise RuntimeError("Earth Engine returned data, but no observations remained after temporal aggregation.")
 
                 st.session_state["raw_df"] = raw_df
                 st.session_state["analysis_df"] = result_df
                 st.session_state["analysis_config"] = {
-                    "project_id": ee_project_id,
-                    "bounds": bounds,
-                    "start_date": start_text,
-                    "end_date": end.isoformat(),
-                    "end_date_exclusive": end_exclusive,
-                    "datasets": tuple(datasets_selected),
-                    "cloud_percent": int(cloud_thresh),
+                    "mode": "snapshot",
+                    "snapshot_meta": meta,
+                    "project_id": "",
+                    "bounds": tuple(meta["bounds"]),
+                    "start_date": meta["start_date"],
+                    "end_date": meta.get("end_date", meta["end_date_exclusive"]),
+                    "end_date_exclusive": meta["end_date_exclusive"],
+                    "datasets": tuple(meta.get("datasets", ())),
+                    "cloud_percent": meta.get("cloud_percent", 35),
                     "temporal": temporal_agg,
-                    "s1_orbit_pass": s1_orbit_pass,
+                    "s1_orbit_pass": meta.get("s1_orbit_pass", "DESCENDING"),
                 }
-                st.session_state["dataset_counts"] = counts
-                st.session_state["dataset_warnings"] = warnings
+                st.session_state["dataset_counts"] = meta.get("dataset_counts", {})
+                st.session_state["dataset_warnings"] = meta.get("warnings", [])
                 st.session_state["workspace_step"] = 2
-                st.success("Successfully fetched real observations! Transitioning to Explore...")
+                st.success("Successfully loaded genuine satellite observations! Transitioning to Explore...")
                 st.rerun()
-        except Exception as exc:
-            st.error(f"Data query failed: {exc}")
-            st.info("Tip: For Earth Engine authentication, run `earthengine authenticate` in your terminal and ensure the Google Cloud Project has Earth Engine API enabled.")
+
+    else:
+        # Live Earth Engine Query Mode
+        with col_form:
+            if not live_available:
+                st.warning(
+                    "⚠️ **Earth Engine is not currently configured locally.** "
+                    "To execute live queries, ensure `EE_PROJECT_ID` is set and authenticate via `earthengine authenticate`. "
+                    "Alternatively, select 'Hosted Observation Snapshot' above for instant exploration without credentials."
+                )
+
+            selected_preset = st.selectbox(
+                "Study area preset",
+                list(PRESETS.keys()),
+                index=0,
+                key="preset_selection"
+            )
+            preset_coords = PRESETS[selected_preset]
+            if preset_coords is not None:
+                initial_bounds_str = f"{preset_coords[0]}, {preset_coords[1]}, {preset_coords[2]}, {preset_coords[3]}"
+            else:
+                initial_bounds_str = ", ".join(str(val) for val in DEFAULT_AOI_BOUNDS)
+
+            bounds_input = st.text_input(
+                "AOI bounds (min_lon, min_lat, max_lon, max_lat)",
+                value=initial_bounds_str,
+                help="Four comma-separated WGS84 coordinates defining the bounding box."
+            )
+
+            date_range = st.date_input(
+                "Observation date range",
+                value=(default_start, default_end),
+                min_value=date(2000, 1, 1),
+                max_value=today,
+                help="Select start and end dates. 1 to 3 years recommended for optimal response."
+            )
+
+            datasets_selected = st.multiselect(
+                "Satellite sensor collections",
+                DATASETS,
+                default=["Sentinel-2", "Sentinel-1", "MODIS LST"],
+                help="Choose multi-satellite data sources to ingest."
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                cloud_thresh = st.slider(
+                    "Max Sentinel-2 scene cloud (%)",
+                    0, 100, 35, 5,
+                    help="Filters optical imagery by scene cloud coverage."
+                )
+            with c2:
+                temporal_agg = st.selectbox(
+                    "Temporal aggregation",
+                    ["Monthly", "Native cadence"],
+                    index=0,
+                    help="Monthly regularizes satellite passes and averages continuous features while summing precipitation."
+                )
+
+            s1_pass_label = st.selectbox(
+                "Sentinel-1 orbit pass",
+                ["Descending (morning, recommended)", "Ascending (evening)", "Both (mixed geometry)"],
+                index=0,
+                help="Descending pass provides consistent morning acquisitions. Ascending is evening. Both mixes observation geometries with automatic fallback if scenes are absent."
+            )
+            s1_orbit_pass = "DESCENDING" if "Descending" in s1_pass_label else ("ASCENDING" if "Ascending" in s1_pass_label else "BOTH")
+
+            ee_project_id = get_configured_project_id()
+            if not ee_project_id:
+                st.info(
+                    "ℹ️ **Earth Engine Configuration**: Project ID is not configured. "
+                    "Set `EE_PROJECT_ID` in your system environment or in Streamlit Secrets (`.streamlit/secrets.toml`)."
+                )
+
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            fetch_clicked = st.button("Fetch real observations →", type="primary", use_container_width=True)
+
+        with col_map:
+            st.markdown(f"""
+            <div style="font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: {_TEXT_SUBTLE}; margin-bottom: 8px;">
+              AOI Geographic Preview
+            </div>
+            """, unsafe_allow_html=True)
+            try:
+                current_bounds = parse_aoi_bounds(bounds_input)
+                render_aoi_preview(current_bounds, height=390)
+                st.caption(f"Coordinates: Lon [{current_bounds[0]}°, {current_bounds[2]}°] · Lat [{current_bounds[1]}°, {current_bounds[3]}°]")
+            except Exception:
+                st.info("Enter valid bounding box coordinates to preview the map.")
+
+        if fetch_clicked:
+            st.session_state.pop("analysis_df", None)
+            st.session_state.pop("raw_df", None)
+            st.session_state.pop("analysis_config", None)
+            st.session_state.pop("dataset_counts", None)
+            st.session_state.pop("dataset_warnings", None)
+            st.session_state["show_s2_preview"] = False
+            try:
+                ee_project_id = get_configured_project_id()
+                if not ee_project_id:
+                    st.error("Google Earth Engine project is not configured. Please set `EE_PROJECT_ID` in your environment or in Streamlit Secrets.")
+                    st.info("Tip: Set `EE_PROJECT_ID` in your environment (e.g. `$env:EE_PROJECT_ID='your-project-id'`) or Streamlit Cloud Secrets.")
+                    st.stop()
+
+                bounds = parse_aoi_bounds(bounds_input)
+                if not datasets_selected:
+                    raise ValueError("Select at least one satellite dataset.")
+                if not isinstance(date_range, (tuple, list)) or len(date_range) != 2:
+                    raise ValueError("Select both start and end dates.")
+                start, end = date_range
+                if start > end:
+                    raise ValueError("Start date must be before end date.")
+                if (end - start).days > 1100:
+                    raise ValueError("Limit each query to about three years to keep Earth Engine requests responsive.")
+
+                start_text = start.isoformat()
+                end_exclusive = (end + timedelta(days=1)).isoformat()
+
+                with st.spinner("Extracting multi-satellite observations from Google Earth Engine..."):
+                    raw_df, counts, warnings = fetch_real_data(
+                        ee_project_id, bounds, start_text, end_exclusive,
+                        tuple(datasets_selected), int(cloud_thresh),
+                        s1_orbit_pass=s1_orbit_pass
+                    )
+                    result_df = aggregate_feature_timeseries(raw_df, temporal_agg)
+                    if result_df.empty:
+                        raise RuntimeError("Earth Engine returned data, but no observations remained after temporal aggregation.")
+
+                    st.session_state["raw_df"] = raw_df
+                    st.session_state["analysis_df"] = result_df
+                    st.session_state["analysis_config"] = {
+                        "mode": "live",
+                        "project_id": ee_project_id,
+                        "bounds": bounds,
+                        "start_date": start_text,
+                        "end_date": end.isoformat(),
+                        "end_date_exclusive": end_exclusive,
+                        "datasets": tuple(datasets_selected),
+                        "cloud_percent": int(cloud_thresh),
+                        "temporal": temporal_agg,
+                        "s1_orbit_pass": s1_orbit_pass,
+                    }
+                    st.session_state["dataset_counts"] = counts
+                    st.session_state["dataset_warnings"] = warnings
+                    st.session_state["workspace_step"] = 2
+                    st.success("Successfully fetched real observations! Transitioning to Explore...")
+                    st.rerun()
+            except Exception as exc:
+                st.error(f"Data query failed: {exc}")
+                st.info("Tip: For Earth Engine authentication, run `earthengine authenticate` in your terminal and ensure the Google Cloud Project has Earth Engine API enabled.")
 
     # If data already exists, show Next button
     if st.session_state.get("analysis_df") is not None:
@@ -287,6 +429,17 @@ def render_step_2_explore():
       Inspect extracted time-series features, sensor data density, and live satellite true-colour composites.
     </p>
     """, unsafe_allow_html=True)
+
+    # Display hosted snapshot provenance banner if in snapshot mode
+    if config.get("mode") == "snapshot" and "snapshot_meta" in config:
+        smeta = config["snapshot_meta"]
+        st.markdown(f"""
+        <div style="background: {_BG_ALT}; border-left: 3px solid {_TEAL}; border-radius: 0px !important; padding: 14px 18px; margin-bottom: 22px; color: {_TEAL_DARK}; font-size: 0.95rem; font-family: 'Inter', sans-serif;">
+          📁 <strong>Hosted Observation Snapshot:</strong> Displaying genuine satellite observations for <strong>{smeta.get('name', 'Area of Interest')}</strong>
+          (<strong>{smeta.get('start_date')}</strong> to <strong>{smeta.get('end_date_exclusive')}</strong>) exported directly from Google Earth Engine on {smeta.get('extraction_timestamp_utc', '')[:10]}.
+          All missing observations are preserved as NaN; no synthetic values.
+        </div>
+        """, unsafe_allow_html=True)
 
     # Display dataset warnings prominently if any collection was empty or fell back
     warnings = st.session_state.get("dataset_warnings", [])
@@ -352,18 +505,25 @@ def render_step_2_explore():
             </div>
             """, unsafe_allow_html=True)
 
-            if not st.session_state.get("show_s2_preview", False):
-                if st.button("Render live Sentinel-2 map preview", key="step2_render_s2"):
-                    st.session_state["show_s2_preview"] = True
-                    st.rerun()
+            if config.get("mode") == "snapshot" and not is_live_gee_configured():
+                st.info(
+                    "ℹ️ **Live Map Preview**: Generating live raster map tiles requires an active Google Earth Engine connection. "
+                    "In public hosted demonstration mode, live raster tiles are disabled to allow free keyless deployment without Google Cloud billing. "
+                    "All numerical feature time series, correlation analysis, lag analysis, and feature-level fusion below are fully interactive using the verified satellite observations."
+                )
             else:
-                try:
-                    initialize_earth_engine(config["project_id"])
-                    aoi = ee.Geometry.Rectangle(list(config["bounds"]))
-                    collection = load_sentinel2(aoi, config["start_date"], config["end_date_exclusive"], config["cloud_percent"])
-                    render_sentinel2_preview(aoi, collection, config["bounds"], height=480)
-                except Exception as exc:
-                    st.error(f"Unable to render the live Sentinel-2 map: {exc}")
+                if not st.session_state.get("show_s2_preview", False):
+                    if st.button("Render live Sentinel-2 map preview", key="step2_render_s2"):
+                        st.session_state["show_s2_preview"] = True
+                        st.rerun()
+                else:
+                    try:
+                        initialize_earth_engine(config.get("project_id"))
+                        aoi = ee.Geometry.Rectangle(list(config["bounds"]))
+                        collection = load_sentinel2(aoi, config["start_date"], config["end_date_exclusive"], config["cloud_percent"])
+                        render_sentinel2_preview(aoi, collection, config["bounds"], height=480)
+                    except Exception as exc:
+                        st.error(f"Unable to render the live Sentinel-2 map: {exc}")
 
     # Observation Data Table & Download
     with st.expander("Full observations data table", expanded=False):
@@ -596,6 +756,13 @@ def render_step_4_fusion():
 
     # Data Provenance and Catalog References
     with st.expander("Data provenance & scientific specifications", expanded=False):
+        if config.get("mode") == "snapshot" and "snapshot_meta" in config:
+            smeta = config["snapshot_meta"]
+            st.markdown(f"**Observation Snapshot:** `{smeta.get('id')}` (Version {smeta.get('version', '1.0.0')})")
+            st.markdown(f"**Extraction Timestamp (UTC):** `{smeta.get('extraction_timestamp_utc')}`")
+            st.markdown(f"**Processing Protocol:** {smeta.get('processing_details')}")
+            st.markdown("---")
+
         source_details = {
             "Sentinel-2": ("COPERNICUS/S2_SR_HARMONIZED", "NDVI, green-NIR NDWI, EVI; SCL cloud/shadow masking; reflectance scale factor 0.0001."),
             "Sentinel-1": ("COPERNICUS/S1_GRD", "VV/VH backscatter in dB; single log representation preserved."),
@@ -604,8 +771,9 @@ def render_step_4_fusion():
             "GPM IMERG": ("NASA/GPM_L3/IMERG_V07", "Half-hourly precipitation rate in mm/hour aggregated to daily totals."),
         }
         for name in config.get("datasets", ()):
-            coll_id, proc = source_details[name]
-            st.markdown(f"**{name}** (`{coll_id}`): {proc}")
+            if name in source_details:
+                coll_id, proc = source_details[name]
+                st.markdown(f"**{name}** (`{coll_id}`): {proc}")
 
     # Navigation Footer
     st.markdown("<hr style='border: none; border-top: 1px solid #e2e8f0; margin: 32px 0;'>", unsafe_allow_html=True)

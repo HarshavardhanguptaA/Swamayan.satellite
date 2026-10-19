@@ -1,0 +1,77 @@
+{
+  "id": "pune_western_ghats_2022_2024",
+  "name": "Pune, India (Western Ghats fringe)",
+  "bounds": [
+    73.75,
+    18.42,
+    73.98,
+    18.62
+  ],
+  "start_date": "2022-01-01",
+  "end_date_exclusive": "2024-01-01",
+  "extraction_timestamp_utc": "2026-10-19T14:49:42.156644+00:00",
+  "datasets": [
+    "Sentinel-2",
+    "Sentinel-1",
+    "MODIS LST",
+    "Landsat 8/9",
+    "GPM IMERG"
+  ],
+  "dataset_counts": {
+    "Sentinel-2": {
+      "images": 78,
+      "valid_dates": 77
+    },
+    "Sentinel-1": {
+      "images": 36,
+      "valid_dates": 36
+    },
+    "MODIS LST": {
+      "images": 92,
+      "valid_dates": 77
+    },
+    "Landsat 8/9": {
+      "images": 75,
+      "valid_dates": 72
+    },
+    "GPM IMERG": {
+      "images": 730,
+      "valid_dates": 730
+    }
+  },
+  "cloud_percent": 35,
+  "s1_orbit_pass": "DESCENDING",
+  "source_collections": {
+    "Sentinel-2": "COPERNICUS/S2_SR_HARMONIZED",
+    "Sentinel-1": "COPERNICUS/S1_GRD",
+    "MODIS LST": "MODIS/061/MOD11A2",
+    "Landsat 8/9": "LANDSAT/LC08/C02/T1_L2 + LANDSAT/LC09/C02/T1_L2",
+    "GPM IMERG": "NASA/GPM_L3/IMERG_V07"
+  },
+  "dataset_scales_m": {
+    "Sentinel-2": 20,
+    "Sentinel-1": 20,
+    "MODIS LST": 1000,
+    "Landsat 8/9": 30,
+    "GPM IMERG": 11132
+  },
+  "columns": [
+    "date",
+    "S2_NDVI",
+    "S2_NDWI",
+    "S2_EVI",
+    "S1_VV_dB",
+    "S1_VH_dB",
+    "MODIS_LST_Day_C",
+    "MODIS_LST_Night_C",
+    "Landsat_NDVI",
+    "Landsat_NDWI",
+    "Landsat_EVI",
+    "Landsat_LST_C",
+    "GPM_Precip_mm"
+  ],
+  "total_days": 730,
+  "warnings": [],
+  "processing_details": "Genuine multi-satellite observations extracted directly from Google Earth Engine. Observations are merged on UTC calendar dates. Missing observations resulting from cloud occlusion, sensor orbit repeat intervals, or QA screening are preserved as NaN without synthetic interpolation or imputation.",
+  "version": "1.0.0"
+}

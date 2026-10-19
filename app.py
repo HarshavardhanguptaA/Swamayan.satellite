@@ -72,7 +72,7 @@ def _prefixed(frame, rename_map):
 
 
 @st.cache_data(ttl=3600, max_entries=8, show_spinner="Querying Google Earth Engine datasets…")
-def fetch_real_data(project_id, bounds, start_date, end_date_exclusive, datasets, cloud_percent):
+def fetch_real_data(project_id, bounds, start_date, end_date_exclusive, datasets, cloud_percent, s1_orbit_pass="DESCENDING"):
     """Fetch actual observations and cache only the resulting serializable tables."""
     initialize_earth_engine(project_id)
     aoi = ee.Geometry.Rectangle(list(bounds))
@@ -83,7 +83,7 @@ def fetch_real_data(project_id, bounds, start_date, end_date_exclusive, datasets
     # Every collection is filtered server-side. No fallback/mock observations exist.
     loaders = {
         "Sentinel-2": lambda: load_sentinel2(aoi, start_date, end_date_exclusive, cloud_percent),
-        "Sentinel-1": lambda: load_sentinel1(aoi, start_date, end_date_exclusive),
+        "Sentinel-1": lambda: load_sentinel1(aoi, start_date, end_date_exclusive, orbit_pass=s1_orbit_pass),
         "MODIS LST": lambda: load_modis_lst(aoi, start_date, end_date_exclusive),
         "Landsat 8/9": lambda: load_landsat(aoi, start_date, end_date_exclusive),
         "GPM IMERG": lambda: load_gpm(aoi, start_date, end_date_exclusive),

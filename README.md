@@ -181,10 +181,20 @@ python -m pytest tests/ -v
 
 ### 1. Streamlit Community Cloud Deployment
 
-SWAYAMYAN is configured for one-click deployment on **Streamlit Community Cloud**:
+SWAYAMYAN provides two distinct operational modes on **Streamlit Community Cloud**:
 
-1. **Repository Settings:** Connect your GitHub repository (`main` branch) with `app.py` as the entry point.
-2. **Configure App Secrets:** In the Streamlit Cloud dashboard, navigate to **App Settings -> Secrets** and paste your configuration following the template in [`.streamlit/secrets.example.toml`](file:///.streamlit/secrets.example.toml):
+#### Option A: Free Public Hosted Mode (Zero Billing & Zero Credentials Required)
+Deploy SWAYAMYAN 100% free on Streamlit Community Cloud without needing a Google Cloud project, billing account, or Earth Engine credentials:
+1. **Connect Repository:** Connect your GitHub repository (`main` branch) to Streamlit Cloud with `app.py` as the entrypoint.
+2. **Leave Secrets Empty:** You do not need to configure any service account secrets or environment variables.
+3. **Verified Satellite Observations:** The app automatically runs in **Hosted Observation Snapshot Mode**, loading genuine satellite observations (730 continuous calendar days across 5 sensor families) extracted directly from Google Earth Engine.
+4. **Full Analytical Functionality:** Users can interactively explore time series, compute cross-sensor Pearson/Spearman correlation matrices, perform calendar-month lead/lag detection, generate standardized equal-weight feature fusion composites, and download scientific CSVs.
+5. **No Synthetic Data:** All observations are genuine Earth Engine measurements. Missing observations (such as overcast scenes during monsoon months) are preserved as `NaN` without synthetic imputation.
+
+#### Option B: Authenticated Live Query Mode (Optional)
+If you wish to enable live arbitrary querying across global bounding boxes on Streamlit Cloud:
+1. In the Streamlit Cloud dashboard, navigate to **App Settings -> Secrets**.
+2. Paste your configuration following the template in [`.streamlit/secrets.example.toml`](file:///.streamlit/secrets.example.toml):
 
 ```toml
 # Google Cloud Project registered for Earth Engine
@@ -205,6 +215,30 @@ client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/swayam
 ```
 
 > **Security Note:** Real service account keys and secrets must only be entered into Streamlit Cloud Secrets or local `.streamlit/secrets.toml`. Never commit real private keys to GitHub. `.streamlit/secrets.toml` is strictly ignored by `.gitignore`.
+
+---
+
+### How to Refresh or Add Observation Snapshots Locally
+
+You can extract fresh observation snapshots or add new study regions locally using your authenticated workstation:
+
+```bash
+# 1. Authenticate Earth Engine on your workstation (if not already authenticated)
+earthengine authenticate
+
+# 2. Extract a fresh 2-year genuine dataset for Pune
+python scripts/export_snapshot.py --preset pune --start 2022-01-01 --end 2024-01-01
+
+# 3. Or extract for Bengaluru
+python scripts/export_snapshot.py --preset bengaluru --start 2022-01-01 --end 2024-01-01
+
+# 4. Commit and push the updated CSV and metadata to GitHub
+git add data/snapshots/
+git commit -m "data: refresh satellite observation snapshot from Earth Engine"
+git push origin main
+```
+The newly exported dataset will immediately become available in the Streamlit Cloud application dropdown.
+
 
 ### 2. Google Cloud Run Deployment (Keyless via Application Default Credentials)
 
