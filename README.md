@@ -206,19 +206,52 @@ client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/swayam
 
 > **Security Note:** Real service account keys and secrets must only be entered into Streamlit Cloud Secrets or local `.streamlit/secrets.toml`. Never commit real private keys to GitHub. `.streamlit/secrets.toml` is strictly ignored by `.gitignore`.
 
-### 2. Containerized & Self-Hosted Cloud Deployment
+### 2. Google Cloud Run Deployment (Keyless via Application Default Credentials)
 
-For containerized environments (Google Cloud Run, GKE, AWS ECS, Docker):
+SWAYAMYAN supports **100% keyless deployment** on Google Cloud Run using Application Default Credentials (ADC). No service-account JSON private keys are required, complying with Google Cloud organization policies that restrict service-account key creation.
 
-1. **Service Account Credentials:**
-   Provision a Google Cloud Service Account with the `Earth Engine Resource Viewer` (`roles/earthengine.reader`) or `Earth Engine Resource User` role. Mount the key or use Workload Identity:
+#### Steps to Deploy on Cloud Run:
+
+1. **Create/Identify Runtime Service Account:**
+   Create a dedicated service account for the Cloud Run service (or use an existing one):
    ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
-   export EE_PROJECT_ID="your-cloud-project-id"
+   gcloud iam service-accounts create swayamyan-runner \
+       --description="Cloud Run runtime identity for SWAYAMYAN" \
+       --display-name="SWAYAMYAN Runner"
    ```
 
-2. **Port & Server Configuration:**
-   Launch the containerized application using headless settings:
+2. **Grant Earth Engine & Project Permissions:**
+   Assign Earth Engine access and Project Viewer to the runtime service account:
    ```bash
-   streamlit run app.py --server.port 8080 --server.address 0.0.0.0
+   gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+       --member="serviceAccount:swayamyan-runner@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+       --role="roles/earthengine.reader"
+
+   # Ensure the Google Earth Engine API is enabled
+   gcloud services enable earthengine.googleapis.com
    ```
+
+3. **Deploy from Source:**
+   Build and deploy directly using Cloud Build and Cloud Run with the included production `Dockerfile`:
+   ```bash
+   gcloud run deploy swayamyan \
+       --source . \
+       --region us-central1 \
+       --service-account swayamyan-runner@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+       --set-env-vars EE_PROJECT_ID="YOUR_PROJECT_ID" \
+       --allow-unauthenticated
+   ```
+   Cloud Run automatically provides the `PORT` environment variable (default 8080), which the container's entrypoint binds to `0.0.0.0`.
+
+#### Running Locally with Docker:
+```bash
+# Build the container
+docker build -t swayamyan:latest .
+
+# Run locally with ADC mounted or local OAuth
+docker run -p 8080:8080 \
+    -e EE_PROJECT_ID="your-project-id" \
+    -v ~/.config/gcloud:/home/appuser/.config/gcloud:ro \
+    swayamyan:latest
+```
+

@@ -12,6 +12,7 @@ from gee.auth import (
     _sanitize_auth_error,
     get_configured_project_id,
     initialize_earth_engine,
+    is_cloud_run,
 )
 
 
@@ -128,6 +129,10 @@ def test_invalid_credentials_redacts_private_key():
 def test_missing_configuration_error_message(monkeypatch):
     """When neither service account nor local OAuth is available, error provides clear instructions."""
     monkeypatch.delenv("EE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("K_REVISION", raising=False)
+    monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+    monkeypatch.delenv("USE_GCP_ADC", raising=False)
     with patch("gee.auth._get_service_account_info", return_value=None):
         with patch("gee.auth.GEE_PROJECT_ID", ""):
             with patch("ee.Initialize", side_effect=Exception("No persistent credentials")):
@@ -136,4 +141,116 @@ def test_missing_configuration_error_message(monkeypatch):
                 err_text = str(exc_info.value)
                 assert "earthengine authenticate" in err_text
                 assert "EARTH_ENGINE_SERVICE_ACCOUNT" in err_text
+                assert "Cloud Run" in err_text
                 assert "Streamlit Community Cloud" in err_text
+
+
+def test_is_cloud_run_detection(monkeypatch):
+    """Verify is_cloud_run returns True when Cloud Run environment variables are present."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("K_REVISION", raising=False)
+    monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+    assert not is_cloud_run()
+
+    monkeypatch.setenv("K_SERVICE", "swayamyan-service")
+    assert is_cloud_run()
+
+    monkeypatch.delenv("K_SERVICE")
+    monkeypatch.setenv("K_REVISION", "swayamyan-rev-001")
+    assert is_cloud_run()
+
+    monkeypatch.delenv("K_REVISION")
+    monkeypatch.setenv("CLOUD_RUN_JOB", "swayamyan-job")
+    assert is_cloud_run()
+
+
+def test_get_configured_project_id_cloud_run(monkeypatch):
+    """Verify project ID resolution from GOOGLE_CLOUD_PROJECT and GCP_PROJECT."""
+    monkeypatch.delenv("EE_PROJECT_ID", raising=False)
+    with patch("gee.auth._get_streamlit_secret", return_value=None):
+        with patch("gee.auth._get_service_account_info", return_value=None):
+            with patch("gee.auth.GEE_PROJECT_ID", ""):
+                monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "cloud-run-project-123")
+                assert get_configured_project_id() == "cloud-run-project-123"
+
+                monkeypatch.delenv("GOOGLE_CLOUD_PROJECT")
+                monkeypatch.setenv("GCP_PROJECT", "fallback-gcp-project")
+                assert get_configured_project_id() == "fallback-gcp-project"
+
+
+def test_cloud_run_adc_initialization(monkeypatch):
+    """Verify keyless ADC initialization on Cloud Run with project and credentials."""
+    monkeypatch.setenv("K_SERVICE", "swayamyan-app")
+    monkeypatch.setenv("EE_PROJECT_ID", "cloud-run-ee-proj")
+
+    mock_adc_creds = MagicMock(name="MockADCCredentials")
+    with patch("gee.auth._get_service_account_info", return_value=None):
+        with patch("google.auth.default", return_value=(mock_adc_creds, "default-adc-proj")) as mock_auth_default:
+            with patch("ee.Initialize") as mock_init:
+                res = initialize_earth_engine()
+                assert res is not None
+                mock_auth_default.assert_called_once()
+                mock_init.assert_called_once_with(credentials=mock_adc_creds, project="cloud-run-ee-proj")
+
+
+def test_cloud_run_adc_fallback_project(monkeypatch):
+    """Verify Cloud Run ADC falls back to default_project from google.auth.default when EE_PROJECT_ID is unset."""
+    monkeypatch.setenv("K_SERVICE", "swayamyan-app")
+    monkeypatch.delenv("EE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GCP_PROJECT", raising=False)
+
+    mock_adc_creds = MagicMock(name="MockADCCredentials")
+    with patch("gee.auth._get_streamlit_secret", return_value=None):
+        with patch("gee.auth._get_service_account_info", return_value=None):
+            with patch("gee.auth.GEE_PROJECT_ID", ""):
+                with patch("google.auth.default", return_value=(mock_adc_creds, "adc-discovered-proj")):
+                    with patch("ee.Initialize") as mock_init:
+                        res = initialize_earth_engine()
+                        assert res is not None
+                        mock_init.assert_called_once_with(credentials=mock_adc_creds, project="adc-discovered-proj")
+
+
+def test_cloud_run_adc_failure_raises_clear_error(monkeypatch):
+    """Verify descriptive error when ADC initialization fails on Cloud Run."""
+    monkeypatch.setenv("K_SERVICE", "swayamyan-app")
+    monkeypatch.setenv("EE_PROJECT_ID", "cloud-run-ee-proj")
+
+    with patch("gee.auth._get_service_account_info", return_value=None):
+        with patch("google.auth.default", side_effect=Exception("Metadata server unavailable")):
+            with pytest.raises(RuntimeError) as exc_info:
+                initialize_earth_engine()
+            err_msg = str(exc_info.value)
+            assert "Application Default Credentials (ADC) initialization failed on Cloud Run" in err_msg
+            assert "Earth Engine Resource User" in err_msg
+            assert "Metadata server unavailable" in err_msg
+
+
+def test_local_oauth_fallback_to_adc(monkeypatch):
+    """When local OAuth credentials are not found, falls back to local ADC if available."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("K_REVISION", raising=False)
+    monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+    monkeypatch.delenv("USE_GCP_ADC", raising=False)
+    monkeypatch.setenv("EE_PROJECT_ID", "dev-project")
+
+    mock_adc_creds = MagicMock(name="LocalADCCreds")
+
+    call_count = 0
+    def mock_ee_init(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call without credentials (local OAuth) fails
+            raise Exception("Please authorize access to Earth Engine")
+        # Second call with ADC credentials succeeds
+        return None
+
+    with patch("gee.auth._get_service_account_info", return_value=None):
+        with patch("google.auth.default", return_value=(mock_adc_creds, "dev-project")):
+            with patch("ee.Initialize", side_effect=mock_ee_init) as mock_init:
+                res = initialize_earth_engine()
+                assert res is not None
+                assert mock_init.call_count == 2
+                assert mock_init.call_args[1] == {"credentials": mock_adc_creds, "project": "dev-project"}
+

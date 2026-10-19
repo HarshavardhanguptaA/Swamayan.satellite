@@ -1,4 +1,4 @@
-"""Earth Engine initialization supporting both local OAuth and hosted service accounts."""
+"""Earth Engine initialization supporting Google Cloud Run ADC, local OAuth, and hosted service accounts."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 import ee
+import google.auth
 
 from config.constants import GEE_PROJECT_ID
 
@@ -60,8 +61,13 @@ def _get_service_account_info() -> dict[str, Any] | None:
     return None
 
 
+def is_cloud_run() -> bool:
+    """Detect if running inside a Google Cloud Run environment."""
+    return bool(os.getenv("K_SERVICE") or os.getenv("K_REVISION") or os.getenv("CLOUD_RUN_JOB"))
+
+
 def get_configured_project_id(explicit_project: str | None = None) -> str:
-    """Resolve project ID in priority order: explicit arg -> st.secrets -> env var -> constants -> service account."""
+    """Resolve project ID in priority order: explicit arg -> st.secrets -> env var -> GCP project -> constants -> service account."""
     if explicit_project and explicit_project.strip():
         return explicit_project.strip()
 
@@ -72,6 +78,11 @@ def get_configured_project_id(explicit_project: str | None = None) -> str:
     env_project = os.getenv("EE_PROJECT_ID", "").strip()
     if env_project:
         return env_project
+
+    # Google Cloud Run standard environment project variables
+    gcp_project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip() or os.getenv("GCP_PROJECT", "").strip()
+    if gcp_project:
+        return gcp_project
 
     if GEE_PROJECT_ID and GEE_PROJECT_ID.strip():
         return GEE_PROJECT_ID.strip()
@@ -107,12 +118,15 @@ def _sanitize_auth_error(exc: Exception, sa_info: dict[str, Any] | None = None) 
 
 
 def initialize_earth_engine(project_id: str | None = None) -> Any:
-    """Initialize Earth Engine using hosted service-account credentials or local OAuth.
+    """Initialize Earth Engine supporting Cloud Run ADC, local OAuth, or Streamlit secrets.
 
-    Supports:
-    1. Streamlit Community Cloud: Authenticates using service-account credentials
-       defined in ``st.secrets['EARTH_ENGINE_SERVICE_ACCOUNT']`` or ``st.secrets['EE_SERVICE_ACCOUNT_JSON']``.
-    2. Local Development: Retains persistent local OAuth credentials (``~/.config/earthengine``).
+    Authentication hierarchy:
+    1. Streamlit Community Cloud: If ``st.secrets['EARTH_ENGINE_SERVICE_ACCOUNT']`` is set,
+       authenticates via ``ee.ServiceAccountCredentials``.
+    2. Google Cloud Run (Keyless): If running on Cloud Run (``K_SERVICE``), uses
+       Application Default Credentials (ADC) via ``google.auth.default()`` with Earth Engine scopes.
+    3. Local Development: Uses persistent local OAuth credentials (``~/.config/earthengine``)
+       or local ADC fallback.
     """
     project = get_configured_project_id(project_id)
 
@@ -123,7 +137,7 @@ def initialize_earth_engine(project_id: str | None = None) -> Any:
             f"Invalid Earth Engine service account configuration in secrets: {_sanitize_auth_error(exc)}"
         ) from None
 
-    # 1. Hosted Service Account Flow
+    # 1. Optional Hosted Service Account Secret Flow (for environments that explicitly provide it)
     if sa_info is not None:
         client_email = sa_info.get("client_email")
         private_key = sa_info.get("private_key")
@@ -149,7 +163,29 @@ def initialize_earth_engine(project_id: str | None = None) -> Any:
                 f"credentials in secrets are valid. Error: {sanitized}"
             ) from None
 
-    # 2. Local OAuth Flow (or default ADC)
+    # 2. Keyless Google Cloud Run Flow (Application Default Credentials)
+    if is_cloud_run() or os.getenv("USE_GCP_ADC") == "1":
+        try:
+            scopes = getattr(ee.oauth, "SCOPES", [
+                "https://www.googleapis.com/auth/earthengine",
+                "https://www.googleapis.com/auth/cloud-platform",
+            ])
+            adc_credentials, default_project = google.auth.default(scopes=scopes)
+            effective_project = project or default_project or ""
+            if effective_project:
+                ee.Initialize(credentials=adc_credentials, project=effective_project)
+            else:
+                ee.Initialize(credentials=adc_credentials)
+            return ee
+        except Exception as exc:
+            sanitized = _sanitize_auth_error(exc)
+            raise RuntimeError(
+                "Google Earth Engine Application Default Credentials (ADC) initialization failed on Cloud Run. "
+                "Ensure the Cloud Run service account has the 'Earth Engine Resource Viewer' or "
+                f"'Earth Engine Resource User' role and Earth Engine API is enabled. Error: {sanitized}"
+            ) from None
+
+    # 3. Local Development OAuth Flow (with ADC fallback)
     try:
         if project:
             ee.Initialize(project=project)
@@ -157,10 +193,27 @@ def initialize_earth_engine(project_id: str | None = None) -> Any:
             ee.Initialize()
         return ee
     except Exception as exc:
+        # Before failing, attempt local ADC if available (e.g. gcloud auth application-default login)
+        try:
+            scopes = getattr(ee.oauth, "SCOPES", [
+                "https://www.googleapis.com/auth/earthengine",
+                "https://www.googleapis.com/auth/cloud-platform",
+            ])
+            adc_credentials, default_project = google.auth.default(scopes=scopes)
+            effective_project = project or default_project or ""
+            if effective_project:
+                ee.Initialize(credentials=adc_credentials, project=effective_project)
+            else:
+                ee.Initialize(credentials=adc_credentials)
+            return ee
+        except Exception:
+            pass
+
         sanitized = _sanitize_auth_error(exc)
         raise RuntimeError(
             "Google Earth Engine could not be initialized. "
             "For local development, run `earthengine authenticate` in your terminal and set EE_PROJECT_ID. "
-            "For Streamlit Community Cloud, configure EARTH_ENGINE_SERVICE_ACCOUNT and EE_PROJECT_ID in app Secrets. "
+            "For Cloud Run, ensure the service account has Earth Engine access and EE_PROJECT_ID is set. "
+            "For Streamlit Community Cloud, configure EARTH_ENGINE_SERVICE_ACCOUNT in app Secrets. "
             f"Original error: {sanitized}"
         ) from None
